@@ -1,0 +1,799 @@
+---
+title: "Évaluation portant sur le modèle linéaire généralisé"
+author: "Vincent Le Flem"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  comment = NA,
+  echo = FALSE,
+  warning = FALSE,
+  fig.width = 11,
+  fontsize = 12)
+
+library("corrplot")
+library("dplyr")
+library("lubridate")
+library("plotly")
+library("ResourceSelection")
+library("reshape2")
+library("faux")
+library("DataExplorer")
+library("FactoMineR")
+library("car")
+library("caret")
+library("glmnet")
+library("randomForest")
+library("doParallel")
+library("MASS")
+library("caret")
+library("pROC")
+library("e1071")
+```
+
+
+Nota Bene : lorsqu'une interprétation sur une significativité statistique est nécessaire, le seuil de significativité est fixé pour cette étude à un niveau de confiance de 95 %.
+
+
+
+
+#### I. Ajustement du modèle de regression 
+#### I.a. Visualisation et analyse préliminaire des données
+
+Débutons par importer le jeu de données, qui durant cette étude sera nommé "ds_météo".
+
+```{r importation du jeu de données entrainement}
+ds_météo <- read.csv("~/Formation BDF/EM PD-PSL/Model LinGénéralisé/projet/meteo.train.csv", header = TRUE)
+```
+
+
+```{r points de contrôle du jeu de données entrainement, include=FALSE}
+str(ds_météo)
+summary(ds_météo)
+```
+
+
+Lors de l'observation du jeu de données, nous remarquons la présence de cinq variables relatives au moment où la mesure a été effectuée : "Year", "Month", "Day", "Hour" et "Minute". Nous pourrions ainsi créer une colonne "Date" qui concatènerait ces cinq valeurs. Toutefois, notre objectif étant d'effectuer une régression généralisée, ces informations n'apparaissent pas utiles car trop spécifiques. En effet, l'information contenue étant unique pour chaque observation, cela risquerait de pénaliser le modèle lors de futures prédictions du fait, en particulier, du risque de surapprentissage. Il en est de même pour la variable "X" qui représente l'identifiant de l'observation.
+Aussi, il est proposé de supprimer ces six variables de jeu de données pour la détermination du modèle adéquat.
+
+
+```{r ajustement du jeu de données entrainement, include=FALSE}
+ds_météo <- ds_météo[, -c(1:6)]
+head(ds_météo)
+```
+
+
+```{r visualisation préliminaire du jeu de données entrainement}
+plot_intro(ds_météo)
+plot_bar(ds_météo)
+plot_correlation(ds_météo)
+```
+
+
+L'examen préalable du jeu de données montre que celui-ci ne contient aucune donnée manquante et est composé d'une seule variable catégorielle : la variable à prédire "pluie.demain". Il s'agit d'une variable binaire qui constituera la variable réponse de notre modèle prédictif. 
+En raison de l'absence d'autre variable factorielle, et du type de la variable réponse, un modèle de régression logistique semble être le plus approprié. Il est proposé de privilégier ce type de modèle dans la suite de cette étude. 
+
+A cette fin, il est proposé de commencer par identifier les variables qui apparaissent être les plus pertinentes pour la construction du modèle logit. Afin de ne pas se limiter à une procédure plus automatisée et d'explorer au mieux le maximum de concepts vus lors de la formation, il est proposé d'essayer d'identifier ces variables par plusieurs méthodes puis de comparer les résultats obtenus. Cette étude propose d'explorer trois méthodes de sélection.
+
+Une observation préliminaire des corrélations entre les variables suggère qu'un nombre important d'entre elles sont corrélées, ce qui pourrait indiquer la présence de multicolinéarité. Une vigilance particulière doit dès lors être accordée à la vérification de la multicolinéarité entre les variables explicatives.
+
+
+
+
+#### I.b. Sélection de variables
+#### I.b.1. Sélection manuelle de variables
+
+
+```{r détail des matrices des corrélations des variables de type Speed et Pressure}
+
+# I. Sélection des colonnes contenant des variables de type Speed
+sélection_colonnes_speed <- ds_météo %>%
+  dplyr::select(contains("Speed"))
+
+## calcul de la matrice des corrélations
+matrice_corrélations_speed <- cor(sélection_colonnes_speed, use = "complete.obs")
+
+## conversion de la matrice des corrélations pour pouvoir utiliser ggplot
+données_correlations_speed <- melt(matrice_corrélations_speed)
+
+## fltrage des valeurs de corrélation supérieures à 0.7
+données_corrélations_élevées <- données_correlations_speed %>%
+  filter(value > 0.7)
+
+## graphique de la matrice des corrélations 
+matrice_corrélations_speed <- ggplot(données_correlations_speed, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_viridis_c(option = "D") +
+  geom_text(data = données_corrélations_élevées, aes(label = round(value, 2)), color = "white") +
+  ggtitle("Matrice des corrélations des variables Speed") +
+  theme(
+    plot.title = element_text(color = "navy", hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "navy"),
+    axis.text.y = element_text(color = "navy"), 
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank()
+  )
+ggplotly(matrice_corrélations_speed)
+
+
+
+# II. Sélection des colonnes contenant des variables de type Pressure
+sélection_colonnes_pressure <- ds_météo %>%
+  dplyr::select(contains("Pressure"))
+
+## calcul de la matrice des corrélations
+matrice_corrélations_pressure <- cor(sélection_colonnes_pressure, use = "complete.obs")
+
+## conversion de la matrice des corrélations pour pouvoir utiliser ggplot
+données_correlations_pressure <- melt(matrice_corrélations_pressure)
+
+## fltrage des valeurs de corrélation supérieures à 0.7
+données_corrélations_élevées <- données_correlations_pressure %>%
+  filter(value > 0.7)
+
+## graphique de la matrice des corrélations
+matrice_corrélations_pressure <- ggplot(données_correlations_pressure, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_viridis_c(option = "D") +
+  geom_text(data = données_corrélations_élevées, aes(label = round(value, 2)), color = "white") +
+  ggtitle("Matrice des corrélations des variables Pressure") +
+  theme(
+    plot.title = element_text(color = "navy", hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "navy"),
+    axis.text.y = element_text(color = "navy"),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank()
+  )
+ggplotly(matrice_corrélations_pressure)
+```
+
+
+La première approche propose d'identifier les variables les plus pertinentes par itérations successives manuelles. 
+
+Comme relevé précédemment, un examen plus précis des corrélations, notamment entre les variables de type "Speed" et "Pressure", confirme la présence de multicolinéarité. Par exemple, les matrices des corrélations entre ces types de variables montrent des colinéarités significatives entre les variables Wind.Speed.Daily.mean..10.m.above.gnd, Wind.Speed.Daily.mean..80.m.above.gnd, Wind.Speed.Daily.max..10.m.above.gnd,  Wind.Speed.Daily.min..10.m.above.gnd, Wind.Speed.Daily.max..80.m.above.gnd et Wind.Speed.Daily.min..80.m.above.gnd ; ou bien entre les variables Mean.Sea.Level.Pressure.daily.mean..MSL, Mean.Sea.Level.Pressure.daily.max..MSL et Mean.Sea.Level.Pressure.daily.min..MSL.
+Cet examen montre également la présence de corrélations moins significatives mais malgré tout élevées.
+
+Il semble ainsi qu'une partie importante de l'information contenue dans les variables du type "mean", "min" et "max" se retrouve imbriquée les unes dans les autres. Pour pallier cela, une stratégie d'ajustement du modèle consiste à ne conserver que les variables de type "mean", ou uniquement celles de type "min" et "max".
+
+Par ailleurs, une partie de l'information semble également être capturée par les mesures effectuées à différentes altitudes. Néanmoins, afin de ne pas supprimer une quantité trop importante d'information dans le modèle initial, il est proposé de conserver ces nuances en première approche. 
+En conséquence, il est suggéré de comparer initialement un modèle logistique incluant les variables de type "mean" à un modèle logistique incluant les variables de type "min" et "max".
+ 
+
+```{r modèle excluant certaines colinéarités manuellement, include=FALSE}
+
+# I. Sélection des colonnes de ds_météo qui contiennent "mean"
+variables_mean <- grep("mean", names(ds_météo), value = TRUE)
+
+## création de la formule pour le modèle glm incluant uniquement les variables contenant "mean"
+formule <- as.formula(paste("pluie.demain ~", paste(variables_mean, collapse = " + ")))
+
+## ajustement du modèle glm
+modèle_manuel_1 <- glm(formula = formule, data = ds_météo, family = binomial)
+summary(modèle_manuel_1)
+
+
+
+# II. Sélection des colonnes de ds_météo qui contiennent "min" ou "max"
+variables_min_max <- grep("min|max", names(ds_météo), value = TRUE)
+
+# création de la formule pour le modèle glm incluant uniquement les variables contenant "min" ou "max"
+formule <- as.formula(paste("pluie.demain ~", paste(variables_min_max, collapse = " + ")))
+
+# Ajustement du modèle glm
+modèle_manuel_2 <- glm(formula = formule, data = ds_météo, family = binomial)
+summary(modèle_manuel_2)
+```
+
+
+```{r comparaison du modèle selectionnant les variables de type Mean vs. celui sélectionnant les variables de type Min et Max}
+anova(modèle_manuel_1, modèle_manuel_2, test = "LRT")
+```
+
+
+Nous reviendrons plus en détail sur les critères de sélection entre les deux modèles lors du choix du modèle final. Notons ici que la comparaison des deux modèles logistiques révèle une variance résiduelle plus faible pour le modèle n° 2. De plus, la valeur de la statistique "p" est de 9.43e-05, ce qui est inférieur à 5%. Ces résultats suggèrent que le modèle incluant les variables de type "min" et "max" s'ajuste mieux aux données. Par conséquent, il est proposé de conserver et d'affiner le modèle n° 2 à l'aide de la fonction "step".
+
+
+```{r sélection du modèle manuel présentant le meilleur AIC, include=FALSE}
+modèle_manuel_3 <- step(modèle_manuel_2)
+```
+
+
+```{r résumé du modèle manuel présentant le meilleur AIC}
+summary(modèle_manuel_3)
+
+# test de Hosmer-Lemeshow pour vérivifier la pertinance de la régression logistique
+hoslem.test(modèle_manuel_3$y, fitted(modèle_manuel_3))
+```
+
+
+Afin de s'assurer de la pertinence de ce modèle, il est proposé d'effectuer le test de Hosmer et Lemeshow sur la base des informations présentées dans le document de référence [1].
+La valeur-p est supérieure au seuil de 5%, ce qui indique qu'il n'y a pas suffisamment de preuves pour rejeter l'hypothèse nulle selon laquelle ce modèle s'ajuste bien aux données. Cela suggère que ce modèle a une bonne adéquation aux données observées.
+Il est ainsi proposé de retenir les variables de ce modèle pour l'approche de sélection manuelle.
+
+
+
+
+#### I.b. Sélection de variables par régression logistique à l'aide de la fonction "step"
+
+Cette seconde approche utilise directement la foncton "step" pour la sélection de variables. Cette fonction est une méthode automatique de sélection de variables en R qui utilise des critères d'information pour comparer différents modèles en ajoutant ou en supprimant des variables de manière itérative. Elle vise à trouver le modèle le plus optimal en matière de prédiction tout en évitant le surajustement. Nous retiendrons ici le critère d'Akaike (AIC).
+
+
+```{r modèle R automatique, include=FALSE}
+modèle_auto <- step(glm(pluie.demain ~., data = ds_météo, family = binomial))
+```
+
+
+```{r résumé du modèle automatique}
+summary(modèle_auto)
+```
+
+
+R aboutit au modèle ci-dessus. 
+
+Afin de s'assurer que le modèle sélectionné par la fonction "step" maximise le critère d'information retenu, il est proposé de procéder à quelques points de contrôle. 
+Notamment, nous pouvons remarquer que certaines variables sélectionnées par ce modèle n'apparaissent pas statistiquement significatives.
+
+Tout d'abord, nous pouvons nous assurer que l'exclusion de la variable la moins significative - ici, Wind.Speed.daily.min..80.m.above.gnd. -, n'améliore pas le modèle.
+
+
+```{r modèle automtique excluant la variable la moins significative, include=FALSE}
+modèle_auto_2 <- update(modèle_auto, .~. -Wind.Speed.daily.min..80.m.above.gnd. )
+summary(modèle_auto_2)
+```
+
+
+```{r comparaison des modèles}
+anova(modèle_auto, modèle_auto_2, test = "LRT")
+```
+
+
+Les résultats de l'analyse de la déviance montrent que les deux modèles de régression logistique testés présentent des ajustements aux données observées de pluie.demain proches. Toutefois, le premier modèle présente une déviance résiduelle de 1249.6. En comparaison, le deuxième modèle, qui exclut la variable Wind.Speed.daily.min..80.m.above.gnd., montre un ajustement légèrement inférieur avec une déviance résiduelle de 1251.8. La différence de déviance entre les deux modèles, mesurée par une statistique de test "p" de 0.1402 n'est pas statistiquement significative, indiquant que la variable exclue n'améliore pas significativement l'ajustement du modèle. 
+La poursuite de cette stratégie, consistant à exclure la variable la moins significative à chaque itération (non détaillée ici mais consultable dans le code R au besoin), aboutit successivement à la même conclusion. Dès lors, il est proposé de conserver le modèle sélectionné par la fonction "step".
+
+
+```{r modèle automtique excluant la variable la moins significative_2, include=FALSE}
+modèle_auto_3 <- update(modèle_auto_2, .~. -Total.Cloud.Cover.daily.min..sfc.)
+summary(modèle_auto_3)
+anova(modèle_auto_2, modèle_auto_3, test = "LRT")
+```
+
+
+```{r modèle automtique excluant la variable la moins significative_3, include=FALSE}
+modèle_auto_4 <- update(modèle_auto_3, .~. -Snowfall.amount.raw.daily.sum..sfc.)
+summary(modèle_auto_4)
+anova(modèle_auto_3, modèle_auto_4, test = "LRT")
+```
+
+
+```{r modèle automtique excluant la variable la moins significative_4, include=FALSE}
+modèle_auto_5 <- update(modèle_auto_4, .~. -High.Cloud.Cover.daily.max..high.cld.lay.)
+summary(modèle_auto_5)
+anova(modèle_auto_4, modèle_auto_5, test = "LRT")
+```
+
+
+```{r modèle automtique excluant la variable la moins significative_5, include=FALSE}
+modèle_auto_6 <- update(modèle_auto_5, .~. -Wind.Gust.daily.mean..sfc.)
+summary(modèle_auto_6)
+anova(modèle_auto_5, modèle_auto_6, test = "LRT")
+```
+
+
+```{r modèle automtique excluant la variable la moins significative_6, include=FALSE}
+modèle_auto_7 <- update(modèle_auto_6, .~. -Wind.Direction.daily.mean..80.m.above.gnd.)
+summary(modèle_auto_7)
+anova(modèle_auto_6, modèle_auto_7, test = "LRT")
+```
+
+
+```{r compraison entre les modèles auto et auto_7, include=FALSE}
+anova(modèle_auto, modèle_auto_7, test = "LRT")
+```
+
+
+Les variables explicatives étant numériques, une autre stratégie de vérification consiste à analyser la valeur du critère VIF (Variance Inflation Factor) qui leur est associée.
+
+
+```{r examen du critère VIF des variables du modèle R automatique}
+vif(modèle_auto)
+```
+
+
+Nous observons que certaines variables présentent un critère VIF supérieur à 10, ce qui pourrait induire que de la colinéarité reste dans le modèle sélectionné. 
+
+Afin de s'en assurer, il est proposé de :
+
+- Tester d'exclure la variable présentant le critère VIF le plus élevé ;
+- La variable présentant le critère VIF le plus élevé ressortant très significative dans le modèle, d'exclure la variable `Mean.Sea.Level.Pressure.daily.max..MSL.`, elle-même corrélée aux deux variables ayant la valeur VIF la plus élevée et étant la variable la moins significative des trois.
+   
+La comparaison de ces modèles alternatifs avec celui sélectionné par la fonction "step" (non détaillée ici mais consultable dans le code R au besoin) montre que la différence de déviance n'est pas statistiquement significative, indiquant que l'exclusion de ces variables n'améliore pas significativement l'ajustement du modèle.  
+
+En conséquence, il est proposé de conserver le modèle sélectionné par la fonction "step".
+
+
+```{r modèle R automatique excluant la variable avec le plus fort VIF, include=FALSE}
+modèle_auto_8 <- update(modèle_auto, .~. -Mean.Sea.Level.Pressure.daily.mean..MSL.)
+summary(modèle_auto_8)
+anova(modèle_auto, modèle_auto_8, test = "LRT")
+```
+
+
+```{r modèle R automatique excluant la variable Mean.Sea.Level.Pressure.daily.max..MSL., include=FALSE}
+modèle_auto_9 <- update(modèle_auto, .~. -Mean.Sea.Level.Pressure.daily.max..MSL.)
+summary(modèle_auto_9)
+anova(modèle_auto, modèle_auto_9, test = "LRT")
+```
+
+
+```{r vérification de la non existance d un modèle R plus performant, include=FALSE}
+modèle_auto_vérification <- step(glm(formula = pluie.demain ~ Temperature.daily.mean..2.m.above.gnd. + 
+    Mean.Sea.Level.Pressure.daily.mean..MSL. + Snowfall.amount.raw.daily.sum..sfc. + 
+    Total.Cloud.Cover.daily.mean..sfc. + Wind.Speed.daily.mean..80.m.above.gnd. + 
+    Wind.Direction.daily.mean..80.m.above.gnd. + Wind.Direction.daily.mean..900.mb. + 
+    Wind.Gust.daily.mean..sfc. + Temperature.daily.min..2.m.above.gnd. + 
+    Mean.Sea.Level.Pressure.daily.min..MSL. + Total.Cloud.Cover.daily.min..sfc. + 
+    High.Cloud.Cover.daily.max..high.cld.lay. + Medium.Cloud.Cover.daily.max..mid.cld.lay. + 
+    Wind.Speed.daily.max..10.m.above.gnd. + Wind.Speed.daily.min..10.m.above.gnd. + 
+    Wind.Speed.daily.min..80.m.above.gnd., family = binomial, 
+    data = ds_météo))
+summary(modèle_auto_vérification)
+```
+
+
+
+
+#### I.c. Sélection de variables selon l'élimination récursive des caractéristiques (RFE)
+
+À titre de comparaison, il est proposé d'explorer une autre méthode de sélection de variables, bien que celle-ci n'ait pas été abordée en cours et ne soit pas destinée à se substituer à la méthode de régression logistique présentée dans les deux sections précédentes. Cette analyse complémentaire est menée à titre exploratoire et par curiosité de comparaison des méthodes et résultats.
+
+Cette section propose de sélectionner les variables pertinentes selon la méthode de l'élimination récursive des caractéristiques (RFE). Tout comme la sélection de variables par la fonction "step", cette méthode consiste à construire un modèle en éliminant les variables les moins significatives de manière itérative. À chaque itération, le modèle est ajusté et les variables sont reclassées en fonction de leur importance jusqu'à ce qu'un nombre optimal de variables soit sélectionné. Cependant, là où la fonction "step" agit sur des critères d'information, les algorithmes de la méthode RFE reposent souvent sur des modèles tels que les forêts aléatoires.
+
+La méthode implémentée s'appuie sur les recommandations présentées dans le document de référence [2]. Tout d'abord, un contrôle RFE est défini en utilisant la validation croisée répétée avec la fonction "rfFuncs" pour évaluer les performances du modèle. Le jeu de données est ensuite préparé en séparant les variables explicatives (x) de la variable cible (y) et en créant des ensembles d'entraînement (80%) et de test (20%). La fonction "rfe" est ensuite appliquée sur l'ensemble d'entraînement pour sélectionner les meilleures variables, en testant différentes tailles de sous-ensembles via l'algorithme de forêt aléatoire. Les résultats de l'importance des caractéristiques sont visualisés à l'aide de graphiques ggplot, montrant l'importance relative des variables sélectionnées comme les plus pertinentes pour la prédiction de "pluie.demain"
+
+
+```{r vérification du type de la variable pluie.demain, include=FALSE}
+
+# limiter les problèmes de références aux données sources
+ds_météo <- read.csv("~/Formation BDF/EM PD-PSL/Model LinGénéralisé/projet/meteo.train.csv", header = TRUE)
+ds_météo <- ds_météo[, -c(1:6)]
+
+# convertion de la variable cible en facteur
+ds_météo$pluie.demain <- factor(ds_météo$pluie.demain)
+str(ds_météo$pluie.demain)  
+```
+
+
+```{r sélection de variables via la méthode RFE, include=FALSE}
+
+# configuration du calcul parrallèle avec 8 cœurs
+num_cores <- 8
+registerDoParallel(cores = num_cores)
+
+# méthode de contrôle pour la RFE
+contrôle_RFE <- rfeControl(functions = rfFuncs, 
+                      method = "repeatedcv", 
+                      repeats = 4, 
+                      number = 10,
+                      allowParallel = TRUE)
+
+# préparation du jeu de données
+x <- ds_météo %>%
+  dplyr::select(-pluie.demain)  
+x <- as.data.frame(x)
+
+# définition de la variable cible
+y <- ds_météo$pluie.demain
+
+# création d'un jeu de données d'entrainement (80%) et de test (20%)
+set.seed(2024)
+inTrain <- createDataPartition(y, p = .80, list = FALSE)[,1]
+
+x_train <- x[ inTrain, ]
+x_test  <- x[-inTrain, ]
+
+
+y_train <- y[ inTrain]
+y_test  <- y[-inTrain]
+
+# RFE
+résultat_RFE <- rfe(x = x_train, 
+                   y = y_train, 
+                   sizes = c(1:20),
+                   rfeControl = contrôle_RFE)
+résultat_RFE
+
+# arrêt du cluster de parallélisation
+stopImplicitCluster()
+```
+
+
+```{r représentation graphique des résultats de la sélection des caractéristiques par la méthode RFE}
+ggplot(data = résultat_RFE, metric = "Accuracy") + theme_bw()
+ggplot(data = résultat_RFE, metric = "Kappa") + theme_bw()
+```
+
+
+```{r visualisation des caractéristiques importantes selon la méthode RFE}
+
+importance_caractéristiques <- data.frame(feature = row.names(varImp(résultat_RFE))[1:16],
+                          importance = varImp(résultat_RFE)[1:16, 1])
+
+ggplot(data = importance_caractéristiques[1:16, ],  
+       aes(x = reorder(feature, -importance), y = importance, fill = importance)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Caractéristiques", y = "Importance", title = "Importance des caractéristiques") +
+  geom_text(aes(label = round(importance, 2)), vjust = 1.6, color = "white", size = 4) +
+  scale_fill_viridis_c(option = "H") + 
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, color = "navy"),
+        axis.text.y = element_text(color = "navy"),
+        plot.title = element_text(hjust = 0.5, color = "navy", size = 14),
+        axis.title.x = element_text(color = "Navy", size = 12), 
+        axis.title.y = element_text(color = "Navy", size = 12),
+        legend.position = "top",
+        legend.title = element_blank())
+```
+
+
+Les résultats obtenus par la méthode RFE montrent que l'accuracy, critère mesurant la proportion de prédictions correctes parmi toutes les prédictions effectuées, et le coefficient Kappa, critère mesurant l'accord entre les prédictions du modèle et les observations réelles en tenant compte des concordances dues au hasard, sont optimaux pour un sous-ensemble spécifique de seize variables. Ces variables sont représentées par ordre d'importance dans le graphique ci-dessus.
+Nous pouvons alors effectuer une régression logistique avec les caractéristiques sélectionnées par la méthode RFE.
+
+
+```{r modèle effectué à partir des caractérisque retenues par la méthode RFE}
+
+# sélection des caractéristiques les plus importantes selon la RFE
+caractéristiques_sélectionnées <- row.names(varImp(résultat_RFE))[1:16]
+
+# ajustement du modèle de régression logistique sur l'ensemble des données avec les caractéristiques sélectionnées
+caractéristiques_sélectionnées_ds_météo <- ds_météo %>%
+  dplyr::select(all_of(caractéristiques_sélectionnées), pluie.demain)
+
+modèle_RFE <- glm(pluie.demain ~ ., data = caractéristiques_sélectionnées_ds_météo, family = binomial)
+summary(modèle_RFE)
+```
+
+
+Les résultats des tests effectuer ensuite vérifiant s'il existe d'autres modèles plus performants, notamment avec la fonction "step", montrent que le modèle initialement obtenu avec la méthode RFE est le plus significatif. Il est donc proposer de conserver ce modèle pour la suite de cette étude.
+
+
+```{r, point de contrôle des variables intégrées au modèle_RFE, include=FALSE}
+
+# vérification des caractéristiques sélectionnées
+selection_caractéristiques <- predictors(résultat_RFE)
+print(selection_caractéristiques)
+
+# vérification des colonnes manquantes
+colonnes_manquantes <- setdiff(selection_caractéristiques, colnames(x_train))
+if (length(colonnes_manquantes) > 0) {
+  print("Les colonnes suivantes sont manquantes dans x_train :")
+  print(colonnes_manquantes)
+} else {
+  print("Toutes les colonnes sélectionnées sont présentes dans x_train.")
+}
+
+# vérification des doublons 
+selection_caractéristiques_unique <- unique(selection_caractéristiques)
+if (length(selection_caractéristiques_unique) != length(selection_caractéristiques)) {
+  print("Des doublons ont été trouvés dans les caractéristiques sélectionnées.")
+  print(selection_caractéristiques[duplicated(selection_caractéristiques)])
+}
+```
+
+
+```{r recherche du modèle RFE ayant un AIC le plus faible, include=FALSE}
+modèle_RFE_2 <- step(modèle_RFE)
+```
+
+
+```{r résumé du modèle RFE ayant un AIC le plus faible, include=FALSE}
+summary(modèle_RFE_2)
+anova(modèle_RFE, modèle_RFE_2, test = "LRT")
+```
+
+
+```{r prédictions selon le modèle RFE, include=FALSE}
+
+# Prédire les probabilités de la classe positive
+predictions <- predict(modèle_RFE, data = ds_météo, type = "response")
+
+# Utiliser le même calcul que précédemment
+auc <- roc(response = ds_météo$pluie.demain, predictor = predictions)
+
+# Afficher l'AUC
+cat("AUC du modèle : ", round(auc$auc, 3), "\n")
+
+# Convertir les données de la courbe ROC en data frame pour ggplot
+roc_data <- data.frame(
+  Sensitivity = rev(auc$sensitivities),
+  Specificity = rev(auc$specificities)
+)
+
+# Tracer la courbe ROC
+ggplot(roc_data, aes(x = 1 - Specificity, y = Sensitivity)) +
+  geom_line(color = "blue", size = 1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  labs(
+    title = "Courbe ROC du modèle",
+    x = "1 - Spécificité (Taux de Faux Positifs)",
+    y = "Sensibilité (Taux de Vrais Positifs)"
+  ) +
+  theme_minimal() +
+  annotate("text", x = 0.75, y = 0.25, label = paste("AUC =", round(auc$auc, 3)), color = "blue", size = 5)
+```
+
+
+
+
+#### I.c. Choix du modèle
+
+À titre de comparaison, il est proposé de vérifier si un modèle probit pourrait offrir de meilleures performances qu'un modèle logit pour notre analyse. Bien que les modèles logit et probit soient tous deux utilisés pour les régressions binaires, ils diffèrent par la fonction de lien utilisée pour modéliser la probabilité de l'événement cible. Le modèle logit utilise la fonction logistique, tandis que le modèle probit utilise la fonction de distribution cumulative normale. Cette comparaison nous permettra de nous assurer que le modèle logit fournit un ajustement supérieur aux données et ainsi d'optimiser la précision de nos prédictions.
+
+Aussi, il est proposé d'ajouter un modèle probit à la comparaison des modèles sélectionnés par itérations manuelles et par la fonction "step". 
+Le résumé du modèle probit, obtenu avec la fonction "step", n'est pas détaillé dans le présent rapport mais est consutable dans le code R au besoin.
+
+```{r vérification de la non existance d un modèle probit plus performant, include=FALSE}
+modèle_auto_probit <- step(glm(pluie.demain ~., data = ds_météo, family = binomial(link = "probit")))
+summary(modèle_auto_probit)
+```
+
+
+```{r comparaison des modèles manuel, logit, RFE et probit}
+
+# calcul des critères pour chaque modèle
+AIC_modèle_manuel <- AIC(modèle_manuel_3)
+AIC_modèle_auto <- AIC(modèle_auto)
+AIC_modèle_RFE <- AIC(modèle_RFE)
+AIC_modèle_auto_probit <- AIC(modèle_auto_probit)
+
+BIC_modèle_manuel <- BIC(modèle_manuel_3)
+BIC_modèle_auto <- BIC(modèle_auto)
+BIC_modèle_RFE <- BIC(modèle_RFE)
+BIC_modèle_auto_probit <- BIC(modèle_auto_probit)
+
+# calcul de la déviance résiduelle
+deviance_modèle_manuel <- deviance(modèle_manuel_3)
+deviance_modèle_auto <- deviance(modèle_auto)
+deviance_modèle_RFE <- deviance(modèle_RFE)
+deviance_modèle_auto_probit <- deviance(modèle_auto_probit)
+
+# calcul de l'AUC
+roc_modèle_manuel <- roc(ds_météo$pluie.demain, predict(modèle_manuel_3, type = "response"))
+roc_modèle_auto <- roc(ds_météo$pluie.demain, predict(modèle_auto, type = "response"))
+roc_modèle_RFE <- roc(ds_météo$pluie.demain, predict(modèle_RFE, type = "response"))
+roc_modèle_auto_probit <- roc(ds_météo$pluie.demain, predict(modèle_auto_probit, type = "response"))
+
+auc_modèle_manuel <- auc(roc_modèle_manuel)
+auc_modèle_auto <- auc(roc_modèle_auto)
+auc_modèle_RFE <- auc(roc_modèle_RFE)
+auc_modèle_auto_probit <- auc(roc_modèle_auto_probit)
+
+# affichage des résultats
+cat("Résultats des critères pour chaque modèle :\n\n")
+
+cat("Modèle manuel :\n")
+cat(paste("  - AIC du modèle manuel est de :", round(AIC_modèle_manuel, 4), "\n"))
+cat(paste("  - BIC du modèle manuel est de :", round(BIC_modèle_manuel, 4), "\n"))
+cat(paste("  - La déviance résiduelle du modèle manuel est de :", round(deviance_modèle_manuel, 4), "\n"))
+cat(paste("  - AUC du modèle manuel est de :", round(auc_modèle_manuel, 4), "\n\n"))
+
+cat("Modèle automatique (glm) :\n")
+cat(paste("  - AIC du modèle automatique (logit) est de :", round(AIC_modèle_auto, 4), "\n"))
+cat(paste("  - BIC du modèle automatique (logit) est de :", round(BIC_modèle_auto, 4), "\n"))
+cat(paste("  - La déviance résiduelle du modèle automatique (logit) est de :", round(deviance_modèle_auto, 4), "\n"))
+cat(paste("  - AUC du modèle automatique (logit) est de :", round(auc_modèle_auto, 4), "\n\n"))
+
+cat("Modèle automatique (probit) :\n")
+cat(paste("  - AIC du modèle automatique (probit) est de :", round(AIC_modèle_auto_probit, 4), "\n"))
+cat(paste("  - BIC du modèle automatique (probit) est de :", round(BIC_modèle_auto_probit, 4), "\n"))
+cat(paste("  - La déviance résiduelle du modèle automatique (probit) est de :", round(deviance_modèle_auto_probit, 4), "\n"))
+cat(paste("  - AUC du modèle automatique (probit) est de :", round(auc_modèle_auto_probit, 4), "\n\n"))
+
+cat("Modèle RFE :\n")
+cat(paste("  - AIC du modèle RFE est de :", round(AIC_modèle_RFE, 4), "\n"))
+cat(paste("  - BIC du modèle RFE est de :", round(BIC_modèle_RFE, 4), "\n"))
+cat(paste("  - La déviance résiduelle du modèle RFE est de :", round(deviance_modèle_RFE, 4), "\n"))
+cat(paste("  - AUC du modèle RFE est de :", round(auc_modèle_RFE, 4), "\n"))
+```
+
+Les résultats des différents critères d'évaluation pour chaque modèle montrent des performances variables. Le modèle manuel présente un AIC de 1310.8357, un BIC de 1361.5684, et un AUC de 0.8002. Le modèle automatique basé sur la régression logistique (glm) affiche un AIC inférieur à 1285.5944 et un AUC légèrement supérieur à 0.8138, indiquant une meilleure performance globale. En revanche, son BIC de 1376.9133 est plus élevé que celui du modèle manuel, suggérant une complexité accrue. Le modèle automatique basé sur la régression probit a un AIC de 1288.972 et un AUC identique au modèle logit automatique à 0.8138, mais son BIC est encore plus élevé à 1385.3641. Enfin, bien que le modèle RFE présente un AIC, un AUC et une déviance résiduelle plus performants que le modèle manuel, les valeurs de ses critères d'évaluation sont moins satisfaisantes que celles des modèles logit et probit. Ces résultats suggèrent que, bien que les modèles automatiques offrent une meilleure précision (AUC), ils le font au prix d'une complexité accrue (BIC). Le modèle logit automatique semble offrir le meilleur compromis global entre précision et complexité.
+
+L'objectif principal de notre étude est de maximiser la capacité prédictive de la variable réponse plutôt que d'expliquer les causes du phénomène étudié par les variables. Dès lors, le modèle logit automatique apparaît comme le plus performant. Son AUC élevé indique une meilleure capacité à classifier les données, tandis que son AIC inférieur suggère un ajustement plus précis du modèle par rapport aux autres options. Ainsi, pour l'objectif de maximiser la précision des prédictions tout en maintenant la simplicité du modèle, le choix du modèle logit automatique est justifié.
+
+Par conséquent, il est proposé de conserver définitivement le modèle logit sélectionné par la fonction "step".
+
+Toutefois, en examinant le résumé de ce modèle, nous constatons que la déviance résiduelle est supérieure aux degrés de liberté du modèle. Sous l'hypothèse nulle, la déviance suit une distribution du khi-2 avec pour espérance le nombre de degrés de liberté égal à celui du modèle, ce qui permet de comparer le modèle sélectionné au modèle saturé. Or, ces résultats suggèrent qu'une partie de la variabilité n'est pas modélisée. Afin d'essayer d'améliorer ce modèle, il est proposé de le comparer à un modèle tenant compte des interactions, sélectionné par la fonction 'step'."
+
+
+```{r modèle automatique avec interactions, include=FALSE}
+modèle_auto_interactions <- step(glm(pluie.demain ~ (Temperature.daily.mean..2.m.above.gnd. + 
+    Mean.Sea.Level.Pressure.daily.mean..MSL. + Snowfall.amount.raw.daily.sum..sfc. + 
+    Total.Cloud.Cover.daily.mean..sfc. + Wind.Speed.daily.mean..80.m.above.gnd. + 
+    Wind.Direction.daily.mean..80.m.above.gnd. + Wind.Direction.daily.mean..900.mb. + 
+    Wind.Gust.daily.mean..sfc. + Temperature.daily.min..2.m.above.gnd. + 
+    Mean.Sea.Level.Pressure.daily.max..MSL. + Mean.Sea.Level.Pressure.daily.min..MSL. + 
+    Total.Cloud.Cover.daily.min..sfc. + High.Cloud.Cover.daily.max..high.cld.lay. + 
+    Medium.Cloud.Cover.daily.max..mid.cld.lay. + Wind.Speed.daily.max..10.m.above.gnd. + 
+    Wind.Speed.daily.min..10.m.above.gnd. + Wind.Speed.daily.min..80.m.above.gnd.)^2, 
+    data = ds_météo,
+    family = binomial))
+summary(modèle_auto_interactions)
+```
+
+
+```{r comparaison des modèles automatiques et automatiques avec interactions}
+anova(modèle_auto, modèle_auto_interactions, test = "LRT")
+```
+
+
+```{r prédictions selon le modèle R avec interactions}
+
+# prédictions
+predictions <- predict(modèle_auto_interactions, data = ds_météo, type = "response")
+
+# calcul de la courbe ROC et de l'AUC
+auc <- roc(response = ds_météo$pluie.demain, predictor = predictions)
+
+# convertion des données de la courbe ROC en data frame pour ggplot
+roc_data <- data.frame(
+  Sensitivity = rev(auc$sensitivities),
+  Specificity = rev(auc$specificities)
+)
+
+# représentation graphique
+ggplot(roc_data, aes(x = 1 - Specificity, y = Sensitivity)) +
+  geom_line(color = "blue", size = 1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  labs(
+    title = "Courbe ROC du modèle R avec interactions",
+    x = "1 - Spécificité (Taux de Faux Positifs)",
+    y = "Sensibilité (Taux de Vrais Positifs)"
+  ) +
+  annotate("text", x = 0.75, y = 0.25, label = paste("AUC =", round(auc$auc, 4)), color = "blue", size = 5) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(color = "navy", size = 14, face = "bold", hjust = 0.5),
+    axis.title.x = element_text(color = "navy", size = 12),
+    axis.title.y = element_text(color = "navy", size = 12)
+  )
+```
+
+
+Les résultats de l'analyse de la déviance montrent une amélioration significative de l'ajustement du modèle lors du passage du modèle n° 1 au modèle n° 2. Le premier modèle, comprenant uniquement des termes principaux, présente une déviance résiduelle de 1249.6 sur 1162 degrés de liberté. En revanche, le second modèle, qui inclut également des interactions entre les variables, affiche une déviance résiduelle réduite à 1068.3 sur 1126 degrés de liberté, soit une valeur inférieure à l'espérance du modèle saturé. Avec une valeur p de 2.2e-16, cette différence apparaît statistiquement significative, indiquant que l'ajout des interactions améliore de manière notable l'ajustement du modèle aux données observées. Ce constat est renforcé par l'amélioration de l'AIC qui passe de 1285.6 à 1176.3, ce qui suggère un meilleur équilibre entre complexité et ajustement.
+
+De plus, l'AUC s'améliore significativement en passant de 0.8138 à 0.8689. Cette augmentation indique une meilleure capacité du modèle à classifier correctement les observations positives et négatives. En intégrant des interactions entre les variables, le modèle se complexifie mais semble s'approprier plus efficacement les relations complexes entre les prédicteurs et la variable cible, augmentant ainsi la capacité prédictive globale du modèle. Ces résultats suggèrent que l’inclusion des interactions améliore non seulement l'ajustement du modèle aux données mais aussi sa capacité à prévoir les événements étudiés de manière plus précise et robuste.
+
+Bien que le modèle incluant des interactions soit plus complexe et moins interprétable que le modèle sans interactions, il est préconisé de le conserver pour la suite de l'étude en raison de ces résultats. Afin de valider définitivement notre modèle, il est proposé de procéder à une validation croisée pour évaluer la performance prédictive du modèle.
+
+
+```{r entrainement du modèle sélectionné avec une validation croisée}
+
+# limiter les problèmes de références aux données sources
+ds_météo <- read.csv("~/Formation BDF/EM PD-PSL/Model LinGénéralisé/projet/meteo.train.csv", header = TRUE)
+ds_météo <- ds_météo[, -c(1:6)]
+
+# conversion de la colonne cible en facteur et renommage des niveaux
+ds_météo$pluie.demain <- factor(ds_météo$pluie.demain, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+
+# formule du modèle avec interactions
+formule_interactions <- pluie.demain ~ (Temperature.daily.mean..2.m.above.gnd. + 
+                           Mean.Sea.Level.Pressure.daily.mean..MSL. + 
+                           Snowfall.amount.raw.daily.sum..sfc. + 
+                           Total.Cloud.Cover.daily.mean..sfc. + 
+                           Wind.Speed.daily.mean..80.m.above.gnd. + 
+                           Wind.Direction.daily.mean..80.m.above.gnd. + 
+                           Wind.Direction.daily.mean..900.mb. + 
+                           Wind.Gust.daily.mean..sfc. + 
+                           Temperature.daily.min..2.m.above.gnd. + 
+                           Mean.Sea.Level.Pressure.daily.max..MSL. + 
+                           Mean.Sea.Level.Pressure.daily.min..MSL. + 
+                           Total.Cloud.Cover.daily.min..sfc. + 
+                           High.Cloud.Cover.daily.max..high.cld.lay. + 
+                           Medium.Cloud.Cover.daily.max..mid.cld.lay. + 
+                           Wind.Speed.daily.max..10.m.above.gnd. + 
+                           Wind.Speed.daily.min..10.m.above.gnd. + 
+                           Wind.Speed.daily.min..80.m.above.gnd.)^2
+
+# définition des contrôles de validation croisée
+contrôles_VC <- trainControl(method = "cv", number = 10, classProbs = TRUE, summaryFunction = twoClassSummary, allowParallel = FALSE)
+
+# entrainement du modèle avec la validation croisée
+set.seed(123)  
+modèle_sélectionné <- train(formule_interactions, data = ds_météo, method = "glm", family = "binomial", trControl = contrôles_VC, metric = "ROC")
+
+# prédictions des probabilités sur les données d'entraînement
+probabilités_prédites <- predict(modèle_sélectionné, newdata = ds_météo, type = "prob")[,2]
+
+# calcul de la courbe ROC
+courbe_roc <- roc(ds_météo$pluie.demain, probabilités_prédites)
+
+# transformation des données ROC en data frame
+données_roc <- data.frame(
+  Specificity = rev(courbe_roc$specificities),
+  Sensitivity = rev(courbe_roc$sensitivities)
+)
+
+# calcul de l'AUC
+valeur_AUC <- auc(courbe_roc)
+
+# réalignement des niveaux des prédictions avec ceux des vraies valeurs
+classes_prédites <- predict(modèle_sélectionné, newdata = ds_météo)
+
+# calcul de la matrice de confusion
+matrice_de_confusion <- confusionMatrix(classes_prédites, ds_météo$pluie.demain)
+matrice_de_confusion
+
+# extraction des métriques de la matrice de confusion
+prec <- matrice_de_confusion$byClass["Precision"]
+recall <- matrice_de_confusion$byClass["Recall"]
+f1 <- matrice_de_confusion$byClass["F1"]
+
+# affixchage des métriques
+cat("AUC: ", round(valeur_AUC, 4), "\n")
+cat("Precision: ", round(prec, 4), "\n")
+cat("Recall: ", round(recall, 4), "\n")
+cat("F1 Score: ", round(f1, 4), "\n")
+```
+
+
+Les résultats montrent une précision globale de 79.66%, avec un intervalle de confiance à 95% compris entre 77.25% et 81.92%. Le taux d'exactitude est significativement supérieur au taux d'information nul de 50.93%, indiquant une performance robuste du modèle. Le coefficient Kappa est de 0.5929, suggérant une concordance modérée. Les sensibilité et spécificité du modèle sont respectivement de 77.89% et 81.36%, indiquant sa capacité à correctement identifier les vrais positifs (77.89%) et les vrais négatifs (81.36%). Avec une valeur prédictive positive de 80.11% et une valeur prédictive négative de 79.25%, le modèle démontre une bonne fiabilité dans ses prédictions bien que les taux de faux positifs et de faux négatifs ne sont pas négligeables. L'AUC atteint 0.8818, soulignant une performance solide dans la classification binaire. Enfin, le score F1 de 0.7898, critère tenant compte à la fois de la capacité du modèle à ne pas classer à tort un négatif en positif et celle d'identifier tous les positifs réels, indique un équilibre satisfaisant entre la précision et le rappel du modèle dans la prédiction des résultats positifs.
+
+Le test de McNemar affiche une valeur p de 0.3329, ce qui tend à montrer qu'il n'y a pas de différence significative dans les discordances entre les prédictions. Ce résultat suggère ainsi que les modèles ou les ajustements comparés ne présentent pas de différences notables dans leur performance globale en termes d'erreurs de classification, ce qui semble indiquer que les modèles sont équivalents en termes de performance ou que le changement n'a pas eu un impact significatif.
+
+Cependant, la valeur de l'AUC s'améliore légèrement. Par conséquent, il est proposé de conserver le modèle sélectionné après validation croisée pour les prédictions sur le jeu de données de test.
+
+
+
+
+#### II. Prédictions
+
+
+Les prédictions sont réalisées sur le jeu de données de test en utilisant le modèle de régression logistique établi précédemment. Une colonne intitulée "pluie.demain" a été ajoutée à ce jeu de données pour contenir les résultats des prédictions. Les résultats complets peuvent être consultés dans le fichier CSV nommé "meteo_test_avec_prédictions".
+
+
+```{r importation et ajustement du jeu de données test, include=FALSE}
+ds_météo_test <- read.csv("~/Formation BDF/EM PD-PSL/Model LinGénéralisé/projet/meteo.test.csv", header = TRUE)
+ds_météo_test <- ds_météo_test[, -c(1:6)]
+head(ds_météo_test)
+str(ds_météo_test)
+summary(ds_météo_test)
+```
+
+
+```{r prédictions à partir du jeu de données test}
+
+# prédictions sur les données de test avec les probabilités
+prédictions <- predict(modèle_sélectionné, newdata = ds_météo_test, type = "prob")
+head(prédictions, 5)
+
+# extraire les probabilités des prédictions pour la classe positive (Yes)
+probabilités_prédites <- prédictions[, "Yes"]
+
+# ajout de la colonne 'pluie.demain' au jeu de données de test, avec une valeur seuil de 0.5
+ds_météo_test_prédictions <- ds_météo_test %>%
+  mutate(pluie.demain = probabilités_prédites > 0.5)
+
+# apperçu des résultat
+head(ds_météo_test_prédictions$pluie.demain, 10)
+```
+
+
+```{r export du jeu de données test contenant les prédictions au format csv}
+write.csv(ds_météo_test_prédictions, file = "~/Formation BDF/EM PD-PSL/Model LinGénéralisé/projet/meteo_test_avec_prédictions.csv", row.names = FALSE)
+```
+
+
+
+
+#### III. Documents de référence
+
+[1] Pratique de la Régression Logistique, Régression Logistique Binaire et Polytomique,Version 2.0, Ricco Rakotomalala, Université Lumière Lyon 2,  lien internet : https://eric.univ-lyon2.fr/ricco/cours/cours/pratique_regression_logistique.pdf ;
+
+[2] Sélection effective des caractéristiques : élimination des caractéristiques récursives à l’aide de R, Okan Bulut, Publié dans
+_Vers la science des données_, 11 janv. 2021, lien internet : https://towardsdatascience.com/effective-feature-selection-recursive-feature-elimination-using-r-148ff998e4f7.
+
+
+
